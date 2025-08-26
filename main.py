@@ -52,7 +52,6 @@ def envoi_mail(message, chemin_capture=None):
         print(f"Erreur envoi mail: {e}")
 
 def get_statuts():
-    # Options pour faire fonctionner Chrome dans un environnement sans écran (comme GitHub Actions)
     chrome_options = Options()
     chrome_options.add_argument("--headless")
     chrome_options.add_argument("--no-sandbox")
@@ -60,43 +59,53 @@ def get_statuts():
     chrome_options.add_argument("--window-size=1920,1080")
 
     driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=chrome_options)
-    wait = WebDriverWait(driver, 20)
-    
+    wait = WebDriverWait(driver, 30) # Augmenté à 30 secondes pour plus de sécurité
+
     try:
         driver.get("https://monprojet.anah.gouv.fr/users/sign_in")
         print("Page login ouverte")
 
-        # Gérer le popup cookies
         try:
             cookie_btn = wait.until(EC.element_to_be_clickable((By.XPATH, "//button[normalize-space(text())='Tout accepter']")))
             cookie_btn.click()
             print("Cookie 'Tout accepter' cliqué")
-            time.sleep(1)
-        except Exception as e:
-            print(f"Pas de pop-up cookie ou erreur : {e}")
+        except Exception:
+            print("Pas de pop-up cookie détectée.")
 
-        # Cliquer sur "J'ai été désigné mandataire"
         bouton_mandataire = wait.until(EC.element_to_be_clickable((By.XPATH, "//button[contains(., \"J'ai été désigné mandataire\")]")))
         bouton_mandataire.click()
         print("Onglet 'mandataire' cliqué")
 
-        # Remplir l'identifiant et le mot de passe
         wait.until(EC.visibility_of_element_located((By.ID, "mandatory_email"))).send_keys(ANAH_LOGIN)
         champ_mdp = wait.until(EC.visibility_of_element_located((By.ID, "mandatory_password")))
         champ_mdp.send_keys(ANAH_MDP)
         print("Champs login remplis")
-
-        # Soumission
-        champ_mdp.submit()
-        print("Formulaire soumis")
         
-        # Attendre la page d'accueil connectée
-        wait.until(EC.presence_of_element_located((By.XPATH, "//h1[contains(text(), 'Mes projets en cours')]")))
-        print("Connexion réussie, page des projets chargée.")
+        champ_mdp.submit()
+        print("Formulaire soumis. Attente de la page intermédiaire...")
+
+        # --- DÉBUT DE LA CORRECTION CRUCIALE ---
+        # On attend et on clique sur le bouton "Voir le projet", comme dans votre script local
+        bouton_voir_projet = wait.until(
+            EC.element_to_be_clickable((By.XPATH, "//button[normalize-space(text())='Voir le projet']"))
+        )
+        print("Bouton 'Voir le projet' trouvé sur la page intermédiaire.")
+        
+        # On utilise un clic JavaScript, plus fiable en headless
+        driver.execute_script("arguments[0].click();", bouton_voir_projet)
+        print("Bouton 'Voir le projet' cliqué. Attente de la page finale des projets...")
+        # --- FIN DE LA CORRECTION CRUCIALE ---
+
+        # On attend qu'un élément de la liste des projets soit visible pour être sûr que la page est chargée
+        wait.until(EC.visibility_of_element_located((By.CSS_SELECTOR, ".project-row")))
+        print("Page finale des projets chargée avec succès.")
         
         statuts = {}
         lignes = driver.find_elements(By.CSS_SELECTOR, ".project-row")
         print(f"Nombre de lignes projet trouvées : {len(lignes)}")
+        if len(lignes) == 0:
+            print("AVERTISSEMENT: Aucune ligne de projet trouvée. La page est peut-être vide ou a changé.")
+
         for ligne in lignes:
             try:
                 nom = ligne.find_element(By.CSS_SELECTOR, ".project-title").text
@@ -105,7 +114,6 @@ def get_statuts():
             except Exception:
                 continue
         
-        # Prendre une capture d'écran pour le contexte en cas de changement
         capture_file = "capture_anah.png"
         driver.save_screenshot(capture_file)
         
@@ -113,7 +121,18 @@ def get_statuts():
 
     except Exception as e:
         print(f"Une erreur majeure est survenue pendant le scraping: {e}")
-        driver.save_screenshot("error_screenshot.png") # Sauvegarde pour le débogage
+        error_screenshot_file = "error_screenshot.png"
+        driver.save_screenshot(error_screenshot_file)
+        print(f"Capture d'écran de l'erreur sauvegardée dans {error_screenshot_file}")
+        
+        html_source_file = "error_page_source.html"
+        try:
+            with open(html_source_file, "w", encoding="utf-8") as f:
+                f.write(driver.page_source)
+            print(f"Le code source HTML de la page d'erreur a été sauvegardé dans {html_source_file}")
+        except Exception as html_e:
+            print(f"Impossible de sauvegarder le code HTML : {html_e}")
+            
         return None, None
     finally:
         driver.quit()
@@ -121,7 +140,10 @@ def get_statuts():
 def charger_anciens_statuts():
     if os.path.exists(STATE_FILE):
         with open(STATE_FILE, 'r') as f:
-            return json.load(f)
+            try:
+                return json.load(f)
+            except json.JSONDecodeError:
+                return {} # Fichier corrompu ou vide
     return {}
 
 def sauvegarder_nouveaux_statuts(statuts):
@@ -141,7 +163,6 @@ def main():
         return
 
     changements = []
-    # Détecter les changements et les nouveaux dossiers
     for nom, statut in nouveaux_statuts.items():
         ancien_statut = anciens_statuts.get(nom)
         if ancien_statut is None:
@@ -149,7 +170,6 @@ def main():
         elif ancien_statut != statut:
             changements.append(f"CHANGEMENT : {nom} - Ancien statut : {ancien_statut} -> Nouveau statut : {statut}")
     
-    # Détecter les dossiers supprimés
     for nom in anciens_statuts.keys():
         if nom not in nouveaux_statuts:
             changements.append(f"DOSSIER SUPPRIMÉ : {nom}")
@@ -163,7 +183,6 @@ def main():
 
     sauvegarder_nouveaux_statuts(nouveaux_statuts)
     print("Mise à jour du fichier de statuts terminée.")
-
 
 if __name__ == "__main__":
     main()
